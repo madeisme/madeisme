@@ -1,0 +1,6 @@
+{
+  "name": "Omah Sembako Sehati",
+  "description": "Aplikasi ERP toko sembako offline-first dengan Room database, arsitektur ViewModel-Repository, dan navigasi 5 layar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
