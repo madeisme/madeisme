@@ -18,23 +18,14 @@ import {
   GeneralJournalTransaction,
   Promotion
 } from '../types/erp';
+import { CANONICAL_COA } from '../constants/accountCodes';
 
-// §6: Minimal 8 Akun Chart of Accounts (COA)
-export const SEED_ACCOUNTS: Account[] = [
-  { code: '1110', name: 'KAS', type: 'ASET' },
-  { code: '1310', name: 'PERSEDIAAN', type: 'ASET' },
-  { code: '1210', name: 'PIUTANG_USAHA', type: 'ASET' },
-  { code: '2110', name: 'HUTANG_USAHA', type: 'LIABILITAS' },
-  { code: '2210', name: 'PPN_KELUARAN', type: 'LIABILITAS' },
-  { code: '3110', name: 'MODAL_PEMILIK', type: 'EKUITAS' }, // Modal Masuk & Tambahan Modal
-  { code: '4110', name: 'PENJUALAN', type: 'PENDAPATAN' },
-  { code: '4120', name: 'DISKON_PENJUALAN', type: 'KONTRA-PENDAPATAN' },
-  { code: '5110', name: 'HPP', type: 'BEBAN' },
-  { code: '5200', name: 'BEBAN_OPERASIONAL', type: 'BEBAN' }, // Pengeluaran Operasional Toko (listrik, air, operasional)
-  { code: '5220', name: 'BEBAN_SEWA', type: 'BEBAN' }, // Beban Sewa Tempat/Kios
-  { code: '5900', name: 'SELISIH_PERSEDIAAN', type: 'BEBAN' }, // Prompt 10 §3
-  { code: '5910', name: 'SELISIH_KAS', type: 'BEBAN' } // Prompt 8 §5
-];
+// 40 Akun Chart of Accounts (COA) resmi dihasilkan dari CANONICAL_COA
+export const SEED_ACCOUNTS: Account[] = CANONICAL_COA.map(c => ({
+  code: c.code,
+  name: c.name,
+  type: c.type
+}));
 
 export const SEED_STORE: Store = {
   id: 'STR-001',

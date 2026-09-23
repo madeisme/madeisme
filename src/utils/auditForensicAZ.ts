@@ -10,6 +10,7 @@ import { AppDatabase } from '../database/appDatabase';
 import { generateStockCard, generateTrialBalance, generateBalanceSheet } from './accountingReports';
 import { formatRupiah, formatDateTimeIndo } from './formatters';
 import { UserRole } from '../types/erp';
+import { CANONICAL_COA } from '../constants/accountCodes';
 
 export interface ForensicMetric {
   label: string;
@@ -696,19 +697,21 @@ export function runAuditForensicAZ(db: AppDatabase): ForensicAuditReport {
   // S: STRUKTUR BAGAN AKUN (CHART OF ACCOUNTS)
   // =========================================================================
   const duplicateAccountCodes = accounts.filter((acc, idx) => accounts.findIndex(a => a.code === acc.code) !== idx);
-  const isSPass = duplicateAccountCodes.length === 0 && accounts.length >= 8;
+  const missingCanonicalCodes = CANONICAL_COA.filter(c => !accounts.some(a => a.code === c.code));
+  const isSPass = duplicateAccountCodes.length === 0 && accounts.length >= 40 && missingCanonicalCodes.length === 0;
 
   items.push({
     letter: 'S',
     name: 'Struktur Bagan Akun (Chart of Accounts)',
     category: 'Akuntansi',
     status: isSPass ? 'PASS' : 'FAIL',
-    formula: 'Kode akun unik tanpa duplikasi, meliputi 5 klasifikasi baku (Aset, Kewajiban, Ekuitas, Pendapatan, Beban)',
+    formula: 'Seluruh 40 akun CANONICAL_COA terdaftar, kode unik tanpa duplikasi, mencakup 5 klasifikasi baku',
     summary: isSPass
-      ? `Struktur bagan akun standar SAK EMKM lengkap (${accounts.length} akun terkonfigurasi tanpa duplikat ID).`
-      : `Ditemukan duplikasi kode akun atau jumlah akun tidak mencukupi standar!`,
+      ? `Struktur bagan akun standar SAK EMKM lengkap (${accounts.length} akun terkonfigurasi, seluruh 40 akun kanonis lengkap tanpa duplikat ID).`
+      : `Ditemukan ketidaksesuaian COA! ${missingCanonicalCodes.length > 0 ? `Akun kanonis hilang: ${missingCanonicalCodes.map(m => m.code).join(', ')}.` : ''} ${duplicateAccountCodes.length > 0 ? `Duplikasi: ${duplicateAccountCodes.map(d => d.code).join(', ')}.` : ''} ${accounts.length < 40 ? `Total akun (${accounts.length}) < 40.` : ''}`,
     metrics: [
-      { label: 'Total Akun Terdaftar', value: `${accounts.length} akun` },
+      { label: 'Total Akun Terdaftar', value: `${accounts.length} akun`, isHighlight: isSPass, isError: !isSPass },
+      { label: 'Akun Kanonis Lengkap', value: `${40 - missingCanonicalCodes.length} / 40`, isHighlight: missingCanonicalCodes.length === 0, isError: missingCanonicalCodes.length > 0 },
       { label: 'Akun Aset (1xxx)', value: `${accounts.filter(a => a.type === 'ASET').length} akun` },
       { label: 'Akun Kewajiban & Ekuitas', value: `${accounts.filter(a => a.type === 'LIABILITAS' || a.type === 'EKUITAS').length} akun` },
       { label: 'Akun Pendapatan & Beban', value: `${accounts.filter(a => a.type === 'PENDAPATAN' || a.type === 'BEBAN' || a.type === 'KONTRA-PENDAPATAN').length} akun` }

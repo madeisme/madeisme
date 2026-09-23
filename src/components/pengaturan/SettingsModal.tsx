@@ -290,7 +290,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsBackingUp(true);
     try {
       const res = await executeBackupToGoogleSheets(db, accessToken);
-      setSuccessMsg(`Backup sukses! Data 22 tabel berhasil dicadangkan ke Google Sheets "${res.fileName}" pada ${formatDateTimeIndo(res.exportedAt)}.`);
+      setSuccessMsg(`Backup sukses! Data 26 tabel berhasil dicadangkan ke Google Sheets "${res.fileName}" pada ${formatDateTimeIndo(res.exportedAt)}.`);
     } catch (err: any) {
       console.error('Backup error:', err);
       setErrorMsg(err.message || 'Gagal mencadangkan data ke Google Sheets.');
@@ -1043,7 +1043,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div>
                     <span className="text-[10px] font-semibold text-slate-500 uppercase block">Versi Skema</span>
                     <span className="font-bold text-slate-800">
-                      v{backupConfig?.schemaVersion || 1} (22 Tabel Entitas)
+                      v{backupConfig?.schemaVersion || 1} (26 Tabel Entitas)
                     </span>
                   </div>
                   <div>
@@ -1068,7 +1068,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </span>
                     </div>
                     <p className="text-[11px] text-emerald-900/80 leading-relaxed">
-                      Mencadangkan snapshot 22 tabel IndexedDB lengkap ke Google Sheets (termasuk produk, saldo batch FIFO, jurnal akuntansi, dan piutang).
+                      Mencadangkan snapshot 26 tabel IndexedDB lengkap ke Google Sheets (termasuk produk, saldo batch FIFO, jurnal akuntansi, piutang, operasional, dan promosi).
                     </p>
                     <button
                       onClick={handleRunBackup}

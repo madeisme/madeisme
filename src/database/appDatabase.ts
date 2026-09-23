@@ -43,6 +43,7 @@ import {
   Promotion
 } from '../types/erp';
 import { hasPermission } from '../rbac/permissions';
+import { CANONICAL_COA } from '../constants/accountCodes';
 import {
   SEED_ACCOUNTS,
   SEED_STORE,
@@ -653,26 +654,31 @@ export class AppDatabase {
       idempotencyKeys: Array.isArray(parsed.idempotencyKeys) ? parsed.idempotencyKeys : []
     };
 
-    // Migrasi akun 5910 SELISIH_KAS
-    if (!schema.accounts.some((a: Account) => a.code === '5910')) {
-      schema.accounts.push({ code: '5910', name: 'SELISIH_KAS', type: 'BEBAN' });
+    // Sinkronisasi COA (Prompt 16 Temuan 1):
+    // 1. Tambahkan seluruh akun di CANONICAL_COA (40 akun) yang belum ada
+    for (const canonical of CANONICAL_COA) {
+      const existing = schema.accounts.find(a => a.code === canonical.code);
+      if (!existing) {
+        schema.accounts.push({
+          code: canonical.code,
+          name: canonical.name,
+          type: canonical.type
+        });
+      } else {
+        // Update nama dan type jika berbeda
+        existing.name = canonical.name;
+        existing.type = canonical.type;
+      }
     }
-    // Migrasi akun 5900 SELISIH_PERSEDIAAN
-    if (!schema.accounts.some((a: Account) => a.code === '5900')) {
-      schema.accounts.push({ code: '5900', name: 'SELISIH_PERSEDIAAN', type: 'BEBAN' });
-    }
-    // Migrasi akun 5200 BEBAN_OPERASIONAL
-    if (!schema.accounts.some((a: Account) => a.code === '5200')) {
-      schema.accounts.push({ code: '5200', name: 'BEBAN_OPERASIONAL', type: 'BEBAN' });
-    }
-    // Migrasi akun 3110 MODAL_PEMILIK
-    if (!schema.accounts.some((a: Account) => a.code === '3110')) {
-      schema.accounts.push({ code: '3110', name: 'MODAL_PEMILIK', type: 'EKUITAS' });
-    }
-    // Migrasi akun 5220 BEBAN_SEWA
-    if (!schema.accounts.some((a: Account) => a.code === '5220')) {
-      schema.accounts.push({ code: '5220', name: 'BEBAN_SEWA', type: 'BEBAN' });
-    }
+
+    // 2. Akun lama non-kanonis: pertahankan jika memiliki histori JournalLine, hapus jika tidak
+    const usedAccountCodesInJournals = new Set(schema.journalLines.map(jl => jl.accountCode));
+    schema.accounts = schema.accounts.filter(a => {
+      const isCanonical = CANONICAL_COA.some(c => c.code === a.code);
+      if (isCanonical) return true;
+      // Jika non-kanonis, hanya pertahankan jika punya histori jurnal
+      return usedAccountCodesInJournals.has(a.code);
+    });
 
     // BackupConfig sanitasi
     schema.backupConfigs.forEach((b: BackupConfig) => {
@@ -1381,6 +1387,7 @@ export class AppDatabase {
     businessDate: string;
     notes?: string;
     items: { lineId: string; qtyReceived: number }[];
+    idempotencyKey?: string;
   }): {
     success: boolean;
     error?: string;
@@ -1390,6 +1397,18 @@ export class AppDatabase {
     journalLines?: JournalLine[];
     grandTotalPortion?: number;
   } {
+    if (params.idempotencyKey && this.hasIdempotencyKey(params.idempotencyKey)) {
+      const existing = this.getIdempotencyKey(params.idempotencyKey);
+      const receipt = this.data.purchaseReceipts.find(r => r.id === existing?.refId);
+      return {
+        success: true,
+        receipt,
+        createdLayers: [],
+        journal: undefined,
+        journalLines: []
+      };
+    }
+
     if (!hasPermission(params.userRole, 'PO_RECEIVE')) {
       return {
         success: false,
@@ -1551,13 +1570,18 @@ export class AppDatabase {
     this.data.journals.unshift(journal);
     this.data.journalLines.push(...journalLines);
 
+    if (params.idempotencyKey) {
+      this.recordIdempotencyKey(params.idempotencyKey, 'PO_RECEIVE', receipt.id);
+    }
+
     this.persist(this.data, [
       IDB_STORES.INVENTORY_LAYERS,
       IDB_STORES.PURCHASE_RECEIPTS,
       IDB_STORES.JOURNALS,
       IDB_STORES.JOURNAL_LINES,
       IDB_STORES.PURCHASES,
-      IDB_STORES.SUPPLIERS
+      IDB_STORES.SUPPLIERS,
+      IDB_STORES.IDEMPOTENCY_KEYS
     ]);
 
     return {
@@ -1665,6 +1689,7 @@ export class AppDatabase {
     userRole?: string;
     notes?: string;
     selectedSaleId?: string;
+    idempotencyKey?: string;
   }): {
     success: boolean;
     errorMessage?: string;
@@ -1673,6 +1698,19 @@ export class AppDatabase {
     journalLines?: JournalLine[];
     newArBalance?: number;
   } {
+    if (params.idempotencyKey && this.hasIdempotencyKey(params.idempotencyKey)) {
+      const existing = this.getIdempotencyKey(params.idempotencyKey);
+      const arTx = this.data.arTransactions.find(t => t.id === existing?.refId);
+      const customer = this.getCustomerById(params.customerId);
+      return {
+        success: true,
+        arTransaction: arTx,
+        journal: undefined,
+        journalLines: [],
+        newArBalance: customer?.arBalance
+      };
+    }
+
     if (params.userRole && !hasPermission(params.userRole, 'AR_SETTLE')) {
       return {
         success: false,
@@ -1753,11 +1791,16 @@ export class AppDatabase {
     this.data.journals.unshift(journal);
     this.data.journalLines.push(...journalLines);
 
+    if (params.idempotencyKey) {
+      this.recordIdempotencyKey(params.idempotencyKey, 'AR_SETTLE', arTx.id);
+    }
+
     this.persist(this.data, [
       IDB_STORES.AR_TRANSACTIONS,
       IDB_STORES.CUSTOMERS,
       IDB_STORES.JOURNALS,
-      IDB_STORES.JOURNAL_LINES
+      IDB_STORES.JOURNAL_LINES,
+      IDB_STORES.IDEMPOTENCY_KEYS
     ]);
 
     return {
@@ -1779,6 +1822,7 @@ export class AppDatabase {
     userRole: UserRole;
     businessDate: string;
     reason?: string;
+    idempotencyKey?: string;
   }): {
     success: boolean;
     error?: string;
@@ -1787,6 +1831,17 @@ export class AppDatabase {
     journalLines?: JournalLine[];
     restoredLayers?: InventoryLayer[];
   } {
+    if (params.idempotencyKey && this.hasIdempotencyKey(params.idempotencyKey)) {
+      const sale = this.data.sales.find(s => s.id === params.saleId);
+      return {
+        success: true,
+        sale,
+        journal: undefined,
+        journalLines: [],
+        restoredLayers: []
+      };
+    }
+
     // RBAC: Hanya OWNER dan ADMIN
     if (!hasPermission(params.userRole, 'VOID_SALE')) {
       return { success: false, error: 'Akses ditolak: Hanya peran OWNER dan ADMIN yang diizinkan melakukan Void penjualan.' };
@@ -1936,13 +1991,18 @@ export class AppDatabase {
     this.data.journals.unshift(journal);
     this.data.journalLines.push(...journalLines);
 
+    if (params.idempotencyKey) {
+      this.recordIdempotencyKey(params.idempotencyKey, 'VOID_SALE', sale.id);
+    }
+
     this.persist(this.data, [
       IDB_STORES.SALES,
       IDB_STORES.INVENTORY_LAYERS,
       IDB_STORES.JOURNALS,
       IDB_STORES.JOURNAL_LINES,
       IDB_STORES.CUSTOMERS,
-      IDB_STORES.AR_TRANSACTIONS
+      IDB_STORES.AR_TRANSACTIONS,
+      IDB_STORES.IDEMPOTENCY_KEYS
     ]);
 
     return {
@@ -1965,6 +2025,7 @@ export class AppDatabase {
     businessDate: string;
     reason?: string;
     items: { lineId: string; qty: number }[];
+    idempotencyKey?: string;
   }): {
     success: boolean;
     error?: string;
@@ -1974,6 +2035,20 @@ export class AppDatabase {
     journalLines?: JournalLine[];
     restoredLayers?: InventoryLayer[];
   } {
+    if (params.idempotencyKey && this.hasIdempotencyKey(params.idempotencyKey)) {
+      const existing = this.getIdempotencyKey(params.idempotencyKey);
+      const saleReturn = this.data.saleReturns.find(r => r.id === existing?.refId);
+      const sale = this.data.sales.find(s => s.id === params.saleId);
+      return {
+        success: true,
+        sale,
+        saleReturn,
+        journal: undefined,
+        journalLines: [],
+        restoredLayers: []
+      };
+    }
+
     // RBAC: Hanya OWNER dan ADMIN
     if (!hasPermission(params.userRole, 'RETURN_SALE')) {
       return { success: false, error: 'Akses ditolak: Hanya peran OWNER dan ADMIN yang diizinkan melakukan Retur penjualan.' };
@@ -2204,7 +2279,21 @@ export class AppDatabase {
     this.data.journals.unshift(journal);
     this.data.journalLines.push(...journalLines);
 
-    this.persist();
+    if (params.idempotencyKey) {
+      this.recordIdempotencyKey(params.idempotencyKey, 'RETURN_SALE', saleReturn.id);
+    }
+
+    this.persist(this.data, [
+      IDB_STORES.SALE_RETURNS,
+      IDB_STORES.SALES,
+      IDB_STORES.SALE_LINES,
+      IDB_STORES.INVENTORY_LAYERS,
+      IDB_STORES.JOURNALS,
+      IDB_STORES.JOURNAL_LINES,
+      IDB_STORES.CUSTOMERS,
+      IDB_STORES.AR_TRANSACTIONS,
+      IDB_STORES.IDEMPOTENCY_KEYS
+    ]);
 
     return {
       success: true,
@@ -2227,6 +2316,7 @@ export class AppDatabase {
     businessDate: string;
     reason?: string;
     items: { lineId: string; qty: number }[];
+    idempotencyKey?: string;
   }): {
     success: boolean;
     error?: string;
@@ -2235,6 +2325,19 @@ export class AppDatabase {
     journal?: Journal;
     journalLines?: JournalLine[];
   } {
+    if (params.idempotencyKey && this.hasIdempotencyKey(params.idempotencyKey)) {
+      const existing = this.getIdempotencyKey(params.idempotencyKey);
+      const purchaseReturn = this.data.purchaseReturns.find(r => r.id === existing?.refId);
+      const purchase = this.data.purchases.find(p => p.id === params.purchaseId);
+      return {
+        success: true,
+        purchase,
+        purchaseReturn,
+        journal: undefined,
+        journalLines: []
+      };
+    }
+
     // RBAC: Hanya OWNER dan ADMIN
     if (!hasPermission(params.userRole, 'RETURN_PURCHASE')) {
       return { success: false, error: 'Akses ditolak: Hanya peran OWNER dan ADMIN yang diizinkan melakukan Retur pembelian ke supplier.' };
@@ -2409,7 +2512,20 @@ export class AppDatabase {
     this.data.journals.unshift(journal);
     this.data.journalLines.push(...journalLines);
 
-    this.persist();
+    if (params.idempotencyKey) {
+      this.recordIdempotencyKey(params.idempotencyKey, 'RETURN_PURCHASE', purchaseReturn.id);
+    }
+
+    this.persist(this.data, [
+      IDB_STORES.PURCHASE_RETURNS,
+      IDB_STORES.PURCHASES,
+      IDB_STORES.PURCHASE_LINES,
+      IDB_STORES.INVENTORY_LAYERS,
+      IDB_STORES.JOURNALS,
+      IDB_STORES.JOURNAL_LINES,
+      IDB_STORES.SUPPLIERS,
+      IDB_STORES.IDEMPOTENCY_KEYS
+    ]);
 
     return {
       success: true,
@@ -2653,6 +2769,7 @@ export class AppDatabase {
     actualCash: number;
     closedByUserId: string;
     notes?: string;
+    idempotencyKey?: string;
   }): {
     success: boolean;
     session?: CashSession;
@@ -2660,6 +2777,16 @@ export class AppDatabase {
     error?: string;
     calculation?: ReturnType<AppDatabase['calculateCashSessionExpected']>;
   } {
+    if (params.idempotencyKey && this.hasIdempotencyKey(params.idempotencyKey)) {
+      const session = this.getCashSessionById(params.sessionId);
+      return {
+        success: true,
+        session,
+        journal: undefined,
+        calculation: undefined
+      };
+    }
+
     const closedByUser = this.getUserById(params.closedByUserId);
     if (!closedByUser) {
       return { success: false, error: 'Pengguna penutup sesi tidak ditemukan.' };
@@ -2777,7 +2904,16 @@ export class AppDatabase {
       session.notes = session.notes ? `${session.notes} | ${params.notes.trim()}` : params.notes.trim();
     }
 
-    this.persist();
+    if (params.idempotencyKey) {
+      this.recordIdempotencyKey(params.idempotencyKey, 'CASH_SESSION_CLOSE', session.id);
+    }
+
+    this.persist(this.data, [
+      IDB_STORES.CASH_SESSIONS,
+      IDB_STORES.JOURNALS,
+      IDB_STORES.JOURNAL_LINES,
+      IDB_STORES.IDEMPOTENCY_KEYS
+    ]);
 
     return {
       success: true,
@@ -2862,6 +2998,11 @@ export class AppDatabase {
     notes?: string;
     lines: Array<{ productId: string; physicalQty: number }>;
   }): StockOpname {
+    const user = this.getUserById(params.userId);
+    if (!user || !hasPermission(user.role, 'STOCK_OPNAME_CREATE')) {
+      throw new Error('Akses ditolak: Peran Anda tidak memiliki izin membuat dokumen Stock Opname (STOCK_OPNAME_CREATE).');
+    }
+
     const now = new Date();
     const dateStr = params.businessDate.replace(/-/g, '');
     const count = this.data.stockOpnames.length + 1;
@@ -2899,12 +3040,29 @@ export class AppDatabase {
   public commitStockOpname(params: {
     opnameId: string;
     committedByUserId: string;
+    idempotencyKey?: string;
   }): {
     success: boolean;
     opname: StockOpname;
     journal?: Journal;
     lines: StockOpnameLine[];
   } {
+    if (params.idempotencyKey && this.hasIdempotencyKey(params.idempotencyKey)) {
+      const opname = this.getStockOpnameById(params.opnameId);
+      const lines = this.data.stockOpnameLines.filter(l => l.opnameId === params.opnameId);
+      return {
+        success: true,
+        opname: opname!,
+        journal: undefined,
+        lines
+      };
+    }
+
+    const committer = this.getUserById(params.committedByUserId);
+    if (!committer || !hasPermission(committer.role, 'STOCK_OPNAME_COMMIT')) {
+      throw new Error('Akses ditolak: Hanya peran OWNER dan ADMIN yang diizinkan melakukan commit Stock Opname (STOCK_OPNAME_COMMIT).');
+    }
+
     const opname = this.getStockOpnameById(params.opnameId);
     if (!opname) throw new Error(`Stock Opname ${params.opnameId} tidak ditemukan!`);
     if (opname.status === 'COMMITTED') {
@@ -3059,7 +3217,18 @@ export class AppDatabase {
     opname.totalVarianceValueLebih = totalLebihValue;
     opname.totalVarianceValueKurang = totalKurangValue;
 
-    this.persist();
+    if (params.idempotencyKey) {
+      this.recordIdempotencyKey(params.idempotencyKey, 'STOCK_OPNAME_COMMIT', opname.id);
+    }
+
+    this.persist(this.data, [
+      IDB_STORES.STOCK_OPNAMES,
+      IDB_STORES.STOCK_OPNAME_LINES,
+      IDB_STORES.INVENTORY_LAYERS,
+      IDB_STORES.JOURNALS,
+      IDB_STORES.JOURNAL_LINES,
+      IDB_STORES.IDEMPOTENCY_KEYS
+    ]);
 
     return {
       success: true,
@@ -3080,6 +3249,11 @@ export class AppDatabase {
     notes?: string;
     lines: Array<{ productId: string; qtyRequested: number }>;
   }): StockTransfer {
+    const user = this.getUserById(params.userId);
+    if (!user || !hasPermission(user.role, 'STOCK_TRANSFER_CREATE')) {
+      throw new Error('Akses ditolak: Peran Anda tidak memiliki izin membuat dokumen Transfer Lokasi (STOCK_TRANSFER_CREATE).');
+    }
+
     if (params.fromLocation === params.toLocation) {
       throw new Error('Lokasi asal dan lokasi tujuan tidak boleh sama!');
     }
@@ -3129,6 +3303,11 @@ export class AppDatabase {
     transferId: string;
     approvedBy: string;
   }): StockTransfer {
+    const user = this.getUserById(params.approvedBy);
+    if (!user || !hasPermission(user.role, 'STOCK_TRANSFER_APPROVE')) {
+      throw new Error('Akses ditolak: Hanya peran OWNER dan ADMIN yang diizinkan menyetujui Transfer Lokasi (STOCK_TRANSFER_APPROVE).');
+    }
+
     const transfer = this.getStockTransferById(params.transferId);
     if (!transfer) throw new Error(`Transfer ${params.transferId} tidak ditemukan!`);
     if (transfer.status !== 'DRAFT') {
@@ -3162,7 +3341,18 @@ export class AppDatabase {
     transferId: string;
     userId: string;
     items: Array<{ productId: string; qtyReceived: number }>;
+    idempotencyKey?: string;
   }): StockTransfer {
+    if (params.idempotencyKey && this.hasIdempotencyKey(params.idempotencyKey)) {
+      const transfer = this.getStockTransferById(params.transferId);
+      return transfer!;
+    }
+
+    const user = this.getUserById(params.userId);
+    if (!user || !hasPermission(user.role, 'STOCK_TRANSFER_RECEIVE')) {
+      throw new Error('Akses ditolak: Peran Anda tidak memiliki izin menerima Transfer Lokasi (STOCK_TRANSFER_RECEIVE).');
+    }
+
     const transfer = this.getStockTransferById(params.transferId);
     if (!transfer) throw new Error(`Transfer ${params.transferId} tidak ditemukan!`);
     if (transfer.status !== 'APPROVED' && transfer.status !== 'RECEIVING') {
@@ -3234,7 +3424,16 @@ export class AppDatabase {
       transfer.status = 'RECEIVING';
     }
 
-    this.persist();
+    if (params.idempotencyKey) {
+      this.recordIdempotencyKey(params.idempotencyKey, 'STOCK_TRANSFER_RECEIVE', transfer.id);
+    }
+
+    this.persist(this.data, [
+      IDB_STORES.STOCK_TRANSFERS,
+      IDB_STORES.STOCK_TRANSFER_LINES,
+      IDB_STORES.INVENTORY_LAYERS,
+      IDB_STORES.IDEMPOTENCY_KEYS
+    ]);
 
     return transfer;
   }

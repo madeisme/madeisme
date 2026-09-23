@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { db } from './appDatabase';
-import { BackupConfig, GeneralJournalCategory, JournalSide } from '../types/erp';
+import { BackupConfig, GeneralJournalCategory, JournalSide, UserRole } from '../types/erp';
 
 export type AppDatabaseRepository = ReturnType<typeof getAppDatabaseRepository>;
 
@@ -40,7 +40,7 @@ export function getAppDatabaseRepository() {
     idempotencyKeys: db.getAllIdempotencyKeys(),
     isReady: db.isReady,
     getRawDatabase: () => db.getRawDatabase(),
-    restoreFromSnapshot: (tablesData: any, actorRole: string) => db.restoreFromSnapshot(tablesData, actorRole),
+    restoreFromSnapshot: (tablesData: any, actorRole: UserRole) => db.restoreFromSnapshot(tablesData, actorRole),
     recordGeneralJournal: (params: {
       businessDate: string;
       description: string;

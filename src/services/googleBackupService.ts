@@ -11,7 +11,7 @@
 
 import { AppDatabase } from '../database/appDatabase';
 import { AppDatabaseRepository, getAppDatabaseRepository } from '../database/useAppDatabase';
-import { BackupConfig, BackupMetadata } from '../types/erp';
+import { BackupConfig, BackupMetadata, UserRole } from '../types/erp';
 
 export type DatabaseProvider = AppDatabase | AppDatabaseRepository;
 
@@ -56,7 +56,7 @@ function resolveRepository(dbOrRepo?: DatabaseProvider): AppDatabaseRepository {
       idempotencyKeys: (dbOrRepo as AppDatabase).getAllIdempotencyKeys(),
       isReady: (dbOrRepo as AppDatabase).isReady,
       getRawDatabase: () => (dbOrRepo as AppDatabase).getRawDatabase(),
-      restoreFromSnapshot: (tablesData: any, actorRole: string) => (dbOrRepo as AppDatabase).restoreFromSnapshot(tablesData, actorRole),
+      restoreFromSnapshot: (tablesData: any, actorRole: UserRole) => (dbOrRepo as AppDatabase).restoreFromSnapshot(tablesData, actorRole),
       saveBackupConfig: (config: BackupConfig) => (dbOrRepo as AppDatabase).saveBackupConfig(config),
       updateBackupTimestamp: (lastBackupAt: string, extra?: any) => (dbOrRepo as AppDatabase).updateBackupTimestamp(lastBackupAt, extra),
     } as unknown as AppDatabaseRepository;
