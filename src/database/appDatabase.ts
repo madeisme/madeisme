@@ -80,6 +80,12 @@ export interface TaxInvoiceRecord {
   generatedAt: string;
 }
 
+export interface AppMetaRecord {
+  id: string; // 'setup_meta'
+  setupCompletedAt: string | null;
+  migratedAt?: string | null;
+}
+
 export interface DatabaseSchema {
   stores: Store[];
   users: User[];
@@ -111,10 +117,11 @@ export interface DatabaseSchema {
   promotions: Promotion[];
   taxInvoiceNumbers?: TaxInvoiceRecord[];
   idempotencyKeys?: IdempotencyRecord[];
+  appMeta?: AppMetaRecord[];
 }
 
 export const IDB_DATABASE_NAME = 'omah_sembako_erp_db';
-export const IDB_VERSION = 1;
+export const IDB_VERSION = 2; // Bumped to 2 for app_meta store creation
 export const STORAGE_KEY = 'omah_sembako_room_db_v1';
 export const IDB_MIGRATED_KEY = 'omah_sembako_idb_migrated';
 
@@ -147,7 +154,8 @@ export const IDB_STORES = {
   OPERATIONAL_EXPENSES: 'operational_expenses',
   GENERAL_JOURNALS: 'general_journals',
   PROMOTIONS: 'promotions',
-  IDEMPOTENCY_KEYS: 'idempotency_keys'
+  IDEMPOTENCY_KEYS: 'idempotency_keys',
+  APP_META: 'app_meta'
 } as const;
 
 export const ALL_IDB_STORE_NAMES = Object.values(IDB_STORES) as string[];
@@ -181,12 +189,20 @@ export const SCHEMA_KEY_TO_STORE: Record<string, string> = {
   operationalExpenses: IDB_STORES.OPERATIONAL_EXPENSES,
   generalJournals: IDB_STORES.GENERAL_JOURNALS,
   promotions: IDB_STORES.PROMOTIONS,
-  idempotencyKeys: IDB_STORES.IDEMPOTENCY_KEYS
+  idempotencyKeys: IDB_STORES.IDEMPOTENCY_KEYS,
+  appMeta: IDB_STORES.APP_META
 };
 
 export const STORE_TO_SCHEMA_KEY: Record<string, string> = {};
 for (const [k, v] of Object.entries(SCHEMA_KEY_TO_STORE)) {
   STORE_TO_SCHEMA_KEY[v] = k;
+}
+
+export function getIDBFactory(): IDBFactory | undefined {
+  if (typeof window !== 'undefined' && window.indexedDB) return window.indexedDB;
+  if (typeof indexedDB !== 'undefined') return indexedDB;
+  if (typeof globalThis !== 'undefined' && (globalThis as any).indexedDB) return (globalThis as any).indexedDB;
+  return undefined;
 }
 
 export class AppDatabase {
@@ -196,6 +212,9 @@ export class AppDatabase {
   private writeQueue: Promise<void> = Promise.resolve();
   public isReady: boolean = false;
   public readyPromise: Promise<void>;
+  public loadError: string | null = null;
+  public isLoadFailed: boolean = false;
+  public simulateReadFailure: boolean = false;
   
   // Navigation & Screen Retained States (Aturan §3: Pindah tab tidak mereset state tab asal)
   public activeTab: 'beranda' | 'kasir' | 'beli' | 'stok' | 'operasional' = 'beranda';
@@ -245,12 +264,13 @@ export class AppDatabase {
    */
   private openIDB(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
-      if (typeof window === 'undefined' || !window.indexedDB) {
+      const idbFactory = getIDBFactory();
+      if (!idbFactory) {
         reject(new Error('IndexedDB tidak tersedia di runtime ini'));
         return;
       }
 
-      const req = window.indexedDB.open(IDB_DATABASE_NAME, IDB_VERSION);
+      const req = idbFactory.open(IDB_DATABASE_NAME, IDB_VERSION);
 
       req.onupgradeneeded = () => {
         const idb = req.result;
@@ -260,6 +280,7 @@ export class AppDatabase {
             if (storeName === IDB_STORES.ACCOUNTS) keyPath = 'code';
             else if (storeName === IDB_STORES.GOOGLE_ACCOUNT_LINKS) keyPath = 'userId';
             else if (storeName === IDB_STORES.IDEMPOTENCY_KEYS) keyPath = 'key';
+            else if (storeName === IDB_STORES.APP_META) keyPath = 'id';
 
             const os = idb.createObjectStore(storeName, { keyPath });
 
@@ -309,6 +330,8 @@ export class AppDatabase {
       if (!clone.userId) clone.userId = clone.id || 'DEFAULT';
     } else if (storeName === IDB_STORES.IDEMPOTENCY_KEYS) {
       if (!clone.key) clone.key = clone.id || String(Date.now() + Math.random());
+    } else if (storeName === IDB_STORES.APP_META) {
+      if (!clone.id) clone.id = 'setup_meta';
     } else {
       if (!clone.id) clone.id = String(Date.now() + Math.random());
     }
@@ -316,10 +339,86 @@ export class AppDatabase {
   }
 
   /**
+   * Baca record app_meta secara spesifik
+   */
+  public async readAppMetaRecord(idb: IDBDatabase): Promise<AppMetaRecord | null> {
+    return new Promise((resolve) => {
+      try {
+        if (!idb.objectStoreNames.contains(IDB_STORES.APP_META)) {
+          return resolve(null);
+        }
+        const tx = idb.transaction([IDB_STORES.APP_META], 'readonly');
+        const os = tx.objectStore(IDB_STORES.APP_META);
+        const req = os.get('setup_meta');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  /**
+   * Helper membaca seluruh IndexedDB dengan mekanisme retry 1-2 kali
+   */
+  private async readAllWithRetry(idb: IDBDatabase, maxRetries: number = 2): Promise<Partial<DatabaseSchema>> {
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= 1 + maxRetries; attempt++) {
+      if (this.simulateReadFailure) {
+        throw new Error('Simulasi kegagalan baca IndexedDB aktif');
+      }
+      try {
+        const result = await this.readAllFromIndexedDB(idb);
+        return result;
+      } catch (err) {
+        lastError = err;
+        console.warn(`[IndexedDB] Percobaan baca ke-${attempt} gagal:`, err);
+        if (attempt <= maxRetries) {
+          await new Promise(r => setTimeout(r, attempt * 100));
+        }
+      }
+    }
+    throw lastError || new Error('Gagal membaca IndexedDB setelah percobaan ulang');
+  }
+
+  /**
+   * Menulis satu object store saja ke IndexedDB secara atomik
+   */
+  public writeSingleStoreToIDB(idb: IDBDatabase, storeName: string, records: any[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = idb.transaction([storeName], 'readwrite');
+        const os = tx.objectStore(storeName);
+        os.clear();
+        for (const rec of records) {
+          os.put(this.normalizeRecordKey(storeName, rec));
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Retry proses inisialisasi penyimpanan jika sebelumnya gagal membaca IDB
+   */
+  public async retryInitStorage(): Promise<void> {
+    this.isReady = false;
+    this.loadError = null;
+    this.isLoadFailed = false;
+    this.notify();
+    await this.initStorage();
+  }
+
+  /**
    * Inisialisasi storage IndexedDB & jalankan migrasi otomatis jika ada localStorage
    */
   private async initStorage(): Promise<void> {
-    if (typeof window === 'undefined' || !window.indexedDB) {
+    const idbFactory = getIDBFactory();
+    if (!idbFactory) {
       this.isReady = true;
       return;
     }
@@ -344,10 +443,18 @@ export class AppDatabase {
 
         if (parsedLegacy) {
           const sanitized = this.sanitizeDatabaseSchema(parsedLegacy);
-          this.data = sanitized;
           if (sanitized.users && sanitized.users.length > 0) {
             this.currentUser = sanitized.users[0];
+            if (!sanitized.appMeta || sanitized.appMeta.length === 0 || !sanitized.appMeta[0].setupCompletedAt) {
+              const now = new Date().toISOString();
+              sanitized.appMeta = [{
+                id: 'setup_meta',
+                setupCompletedAt: now,
+                migratedAt: now
+              }];
+            }
           }
+          this.data = sanitized;
 
           // Tulis seluruh tabel ke IndexedDB dalam SATU IDBTransaction atomik
           await this.writeAllToIndexedDBAtomic(idb, sanitized);
@@ -362,33 +469,120 @@ export class AppDatabase {
             console.warn('[IndexedDB Migration] Verifikasi data gagal. localStorage dipertahankan sementara.');
           }
 
+          this.loadError = null;
+          this.isLoadFailed = false;
           this.isReady = true;
           this.notify();
           return;
         }
       }
 
-      // Jika tidak ada data di localStorage, baca data dari IndexedDB
-      const loadedFromIDB = await this.readAllFromIndexedDB(idb);
-      const hasDataInIDB = loadedFromIDB.accounts && loadedFromIDB.accounts.length >= 8;
+      // Membaca IndexedDB dengan 1-2 kali retry
+      let loadedFromIDB: Partial<DatabaseSchema> | null = null;
+      let readFailed = false;
+      let readErrorMsg = '';
 
-      if (hasDataInIDB) {
-        this.data = this.sanitizeDatabaseSchema(loadedFromIDB);
+      try {
+        loadedFromIDB = await this.readAllWithRetry(idb, 2);
+      } catch (err: any) {
+        readFailed = true;
+        readErrorMsg = err?.message || 'Gagal membaca IndexedDB';
+      }
+
+      // Cek app_meta langsung
+      let metaRecord = loadedFromIDB?.appMeta?.find(m => m.id === 'setup_meta') || loadedFromIDB?.appMeta?.[0];
+      if (!metaRecord && !readFailed) {
+        metaRecord = (await this.readAppMetaRecord(idb)) || undefined;
+      }
+
+      const setupCompletedAt = metaRecord?.setupCompletedAt || null;
+
+      // KASUS 1: Pembacaan IDB Gagal (Error)
+      if (readFailed) {
+        console.error('[IndexedDB] Gagal membaca data dari IndexedDB:', readErrorMsg);
+        // Penting: JANGAN PERNAH menimpa data IndexedDB dengan skeleton!
+        this.loadError = `Gagal membaca database lokal: ${readErrorMsg}. Data tersimpan di IndexedDB tidak ditimpa demi keamanan data Anda.`;
+        this.isLoadFailed = true;
+        this.isReady = true;
+        this.notify();
+        return;
+      }
+
+      // KASUS 2: App SUDAH pernah setup (setupCompletedAt memiliki nilai)
+      if (setupCompletedAt) {
+        const loadedAccounts = loadedFromIDB?.accounts || [];
+        const loadedUsers = loadedFromIDB?.users || [];
+
+        // Jika setupCompletedAt ada tetapi pembacaan tabel mengembalikan kosong (anomali)
+        if (loadedAccounts.length === 0 && loadedUsers.length === 0) {
+          console.warn('[IndexedDB] setupCompletedAt terdeteksi tetapi tabel kosong. Menolak menulis skeleton!');
+          this.loadError = `Database telah terdaftar (Setup selesai pada ${setupCompletedAt}), namun pembacaan tabel lokal kosong. Data tidak ditimpa dengan skeleton.`;
+          this.isLoadFailed = true;
+          this.isReady = true;
+          this.notify();
+          return;
+        }
+
+        // Normal: Data berhasil dimuat untuk app yang sudah setup
+        this.data = this.sanitizeDatabaseSchema(loadedFromIDB!);
+        this.data.appMeta = [{
+          id: 'setup_meta',
+          setupCompletedAt
+        }];
         if (this.data.users && this.data.users.length > 0) {
           this.currentUser = this.data.users.find(u => u.id === this.currentUser.id) || this.data.users[0];
         }
-        console.log('[IndexedDB] Data berhasil dimuat dari IndexedDB.');
-      } else {
-        // Install baru: IndexedDB kosong
-        console.log('[IndexedDB] Database baru terdeteksi kosong. Menulis data inisial...');
-        await this.writeAllToIndexedDBAtomic(idb, this.data);
+        this.loadError = null;
+        this.isLoadFailed = false;
+        console.log('[IndexedDB] Data berhasil dimuat dari IndexedDB (Setup status: COMPLETED).');
+        this.isReady = true;
+        this.notify();
+        return;
       }
 
+      // KASUS 3: Migrasi untuk instalasi existing (sudah ada users > 0 tetapi app_meta belum ada)
+      const existingUsers = loadedFromIDB?.users || [];
+      if (existingUsers.length > 0) {
+        console.log('[IndexedDB] Instalasi existing terdeteksi (users > 0 tanpa app_meta). Migrasi otomatis setupCompletedAt...');
+        const now = new Date().toISOString();
+        const migratedMeta: AppMetaRecord = {
+          id: 'setup_meta',
+          setupCompletedAt: now,
+          migratedAt: now
+        };
+        this.data = this.sanitizeDatabaseSchema(loadedFromIDB!);
+        this.data.appMeta = [migratedMeta];
+        if (this.data.users && this.data.users.length > 0) {
+          this.currentUser = this.data.users.find(u => u.id === this.currentUser.id) || this.data.users[0];
+        }
+        // Simpan hanya record app_meta ke IndexedDB secara atomik
+        await this.writeSingleStoreToIDB(idb, IDB_STORES.APP_META, [migratedMeta]);
+        this.loadError = null;
+        this.isLoadFailed = false;
+        this.isReady = true;
+        this.notify();
+        return;
+      }
+
+      // KASUS 4: Install baru asli (IndexedDB kosong dari nol, users === 0, setupCompletedAt === null)
+      // Kriteria 4: HANYA pada kondisi ini skeleton diinisialisasi
+      console.log('[IndexedDB] Install baru asli (database kosong dari nol). Menyiapkan database first-run...');
+      this.data = this.createFirstRunDatabase();
+      this.data.appMeta = [{
+        id: 'setup_meta',
+        setupCompletedAt: null
+      }];
+      await this.writeAllToIndexedDBAtomic(idb, this.data);
+      this.loadError = null;
+      this.isLoadFailed = false;
       this.isReady = true;
       this.notify();
-    } catch (err) {
+    } catch (err: any) {
       console.error('[IndexedDB] Gagal menginisialisasi IndexedDB:', err);
+      this.loadError = err?.message || 'Gagal menginisialisasi koneksi IndexedDB';
+      this.isLoadFailed = true;
       this.isReady = true;
+      this.notify();
     }
   }
 
@@ -475,7 +669,8 @@ export class AppDatabase {
    * Persist atomik ke IndexedDB untuk stores yang terdampak menggunakan IDBTransaction
    */
   private persistToIndexedDB(affectedStoreNames?: string[]): Promise<void> {
-    if (typeof window === 'undefined' || !window.indexedDB) {
+    const idbFactory = getIDBFactory();
+    if (!idbFactory) {
       return Promise.resolve();
     }
 
@@ -523,7 +718,8 @@ export class AppDatabase {
    * Helper diagnostik & verifikasi untuk mengecek jumlah record di setiap store IndexedDB
    */
   public async getIndexedDBRecordCounts(): Promise<Record<string, number>> {
-    if (typeof window === 'undefined' || !window.indexedDB) {
+    const idbFactory = getIDBFactory();
+    if (!idbFactory) {
       return {};
     }
     if (!this.dbInstance) {
@@ -651,7 +847,8 @@ export class AppDatabase {
       generalJournals: Array.isArray(parsed.generalJournals) ? parsed.generalJournals : [...SEED_GENERAL_JOURNALS],
       promotions: Array.isArray(parsed.promotions) ? parsed.promotions : [...SEED_PROMOTIONS],
       taxInvoiceNumbers: Array.isArray(parsed.taxInvoiceNumbers) ? parsed.taxInvoiceNumbers : [],
-      idempotencyKeys: Array.isArray(parsed.idempotencyKeys) ? parsed.idempotencyKeys : []
+      idempotencyKeys: Array.isArray(parsed.idempotencyKeys) ? parsed.idempotencyKeys : [],
+      appMeta: Array.isArray(parsed.appMeta) ? parsed.appMeta : []
     };
 
     // Sinkronisasi COA (Prompt 16 Temuan 1):
@@ -752,9 +949,12 @@ export class AppDatabase {
       generalJournals: [],
       promotions: [...SEED_PROMOTIONS],
       taxInvoiceNumbers: [],
-      idempotencyKeys: []
+      idempotencyKeys: [],
+      appMeta: [{
+        id: 'setup_meta',
+        setupCompletedAt: null
+      }]
     };
-    this.persist(freshDb);
     return freshDb;
   }
 
@@ -788,9 +988,12 @@ export class AppDatabase {
       generalJournals: [...SEED_GENERAL_JOURNALS],
       promotions: [...SEED_PROMOTIONS],
       taxInvoiceNumbers: [],
-      idempotencyKeys: []
+      idempotencyKeys: [],
+      appMeta: [{
+        id: 'setup_meta',
+        setupCompletedAt: new Date().toISOString()
+      }]
     };
-    this.persist(seed);
     return seed;
   }
 
@@ -836,18 +1039,29 @@ export class AppDatabase {
   }
 
   /**
-   * Cek apakah aplikasi berada dalam kondisi First-Run (belum ada user terdaftar)
+   * Cek apakah aplikasi berada dalam kondisi First-Run berdasarkan app_meta.setupCompletedAt
+   * Sesuai Ketentuan Prompt 18:
+   * 1. Baca app_meta.setupCompletedAt
+   * 2. null -> layar setup (FirstRun)
+   * 3. Ada isinya -> app dianggap sudah pernah setup, apa pun isi tabel lain
    */
   public isFirstRun(): boolean {
-    return !this.data.users || this.data.users.length === 0;
+    const meta = this.data.appMeta?.find(m => m.id === 'setup_meta') || this.data.appMeta?.[0];
+    return !meta || !meta.setupCompletedAt;
+  }
+
+  public getSetupCompletedAt(): string | null {
+    const meta = this.data.appMeta?.find(m => m.id === 'setup_meta') || this.data.appMeta?.[0];
+    return meta?.setupCompletedAt || null;
   }
 
   /**
-   * Eksekusi First-Run Onboarding Setup (Prompt 7 §3):
+   * Eksekusi First-Run Onboarding Setup (Prompt 7 §3 & Prompt 18):
    * 1. Input nama toko (Store) + nama pemilik
    * 2. Buat 1 User role OWNER (satu-satunya cara membuat OWNER pertama)
    * 3. Seed 8 COA accounts
    * 4. Siapkan master data sembako & saldo awal agar langsung siap bertransaksi
+   * 5. Set app_meta.setupCompletedAt tepat setelah OWNER pertama berhasil dibuat
    */
   public completeFirstRunSetup(params: {
     storeName: string;
@@ -899,6 +1113,13 @@ export class AppDatabase {
       this.data.journals = [...SEED_JOURNALS];
       this.data.journalLines = [...SEED_JOURNAL_LINES];
     }
+
+    // 5. Tandai setupCompletedAt tepat setelah OWNER pertama berhasil dibuat (Prompt 18)
+    const now = new Date().toISOString();
+    this.data.appMeta = [{
+      id: 'setup_meta',
+      setupCompletedAt: now
+    }];
 
     this.persist();
     return { success: true, user: firstOwner, store: newStore };
@@ -3583,6 +3804,12 @@ export class AppDatabase {
 
       // Pastikan currentUser valid
       if (this.data.users.length > 0) {
+        if (!this.data.appMeta || this.data.appMeta.length === 0 || !this.data.appMeta[0].setupCompletedAt) {
+          this.data.appMeta = [{
+            id: 'setup_meta',
+            setupCompletedAt: new Date().toISOString()
+          }];
+        }
         const found = this.data.users.find(u => u.id === this.currentUser.id);
         if (found) {
           this.currentUser = found;
@@ -3866,6 +4093,13 @@ export class AppDatabase {
     if (promo) {
       promo.usageCount = (promo.usageCount || 0) + 1;
       this.persist();
+    }
+  }
+
+  public close(): void {
+    if (this.dbInstance) {
+      this.dbInstance.close();
+      this.dbInstance = null;
     }
   }
 }

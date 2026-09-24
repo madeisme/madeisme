@@ -11,7 +11,7 @@ import { FirstRunSetupScreen } from './screens/FirstRunSetupScreen';
 import { SettingsModal } from './components/pengaturan/SettingsModal';
 import { DatabaseInspectorModal } from './components/inspector/DatabaseInspectorModal';
 import { hasPermission } from './rbac/permissions';
-import { Wifi, Battery, Signal, Database } from 'lucide-react';
+import { Wifi, Battery, Signal, Database, AlertTriangle, RefreshCw } from 'lucide-react';
 
 export default function App() {
   const { store, currentUser, kasirCart, products, inventoryLayers, purchases, db } = useAppDatabase();
@@ -37,7 +37,65 @@ export default function App() {
     db.activeTab = tab;
   };
 
-  // If first-run condition: show onboarding screen (Prompt 7 §3)
+  // 1. Loading splash screen while waiting for IndexedDB initialization
+  if (!db.isReady) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 select-none font-sans">
+        <div className="w-16 h-16 rounded-2xl bg-emerald-600/20 border border-emerald-500/40 flex items-center justify-center mb-4">
+          <div className="w-8 h-8 border-3 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+        <h2 className="text-base font-bold text-white tracking-wide">Omah Sembako Sehati</h2>
+        <p className="text-xs text-slate-400 font-mono mt-1">Memuat database lokal IndexedDB...</p>
+      </div>
+    );
+  }
+
+  // 2. Error Screen with Retry if IndexedDB reading failed or table read anomaly (Prompt 18 Bagian B.3)
+  if (db.loadError) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6 font-sans">
+        <div className="max-w-md w-full bg-slate-900 border border-rose-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl text-center space-y-5">
+          <div className="w-14 h-14 rounded-2xl bg-rose-500/20 border border-rose-500/30 text-rose-400 flex items-center justify-center mx-auto">
+            <AlertTriangle className="w-7 h-7" />
+          </div>
+          <div className="space-y-2">
+            <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold uppercase tracking-wider">
+              Proteksi Integritas Data
+            </span>
+            <h2 className="text-lg font-bold text-white">Gagal Membaca Database Lokal</h2>
+            <p className="text-xs text-rose-300 leading-relaxed bg-rose-950/40 border border-rose-900/60 rounded-xl p-3 text-left font-mono">
+              {db.loadError}
+            </p>
+            <p className="text-[11px] text-slate-400 leading-relaxed text-left">
+              Sistem menolak menulis data awal (skeleton) di atas database Anda demi mencegah kehilangan data asli. Silakan tekan tombol di bawah untuk mencoba membaca ulang.
+            </p>
+          </div>
+          <div className="space-y-2 pt-2">
+            <button
+              onClick={() => db.retryInitStorage()}
+              className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg transition cursor-pointer"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Coba Baca Ulang (Retry)</span>
+            </button>
+            <button
+              onClick={() => setIsInspectorOpen(true)}
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-medium flex items-center justify-center gap-1.5 transition"
+            >
+              <Database className="w-3.5 h-3.5 text-slate-400" />
+              <span>Buka Database Inspector</span>
+            </button>
+          </div>
+        </div>
+        <DatabaseInspectorModal
+          isOpen={isInspectorOpen}
+          onClose={() => setIsInspectorOpen(false)}
+        />
+      </div>
+    );
+  }
+
+  // 3. If first-run condition: show onboarding screen (Prompt 7 §3 & Prompt 18)
   if (isFirstRun) {
     return (
       <FirstRunSetupScreen
@@ -138,7 +196,7 @@ export default function App() {
               style={{ display: activeTab === 'stok' ? 'block' : 'none' }}
               className="min-h-full"
             >
-              <StokScreen />
+              <StokScreen onNavigate={handleTabChange} />
             </div>
 
             {/* Tab 5: Operasional */}

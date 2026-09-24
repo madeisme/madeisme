@@ -39,6 +39,11 @@ export function getAppDatabaseRepository() {
     taxInvoiceNumbers: db.getAllTaxInvoiceNumbers(),
     idempotencyKeys: db.getAllIdempotencyKeys(),
     isReady: db.isReady,
+    loadError: db.loadError,
+    isLoadFailed: db.isLoadFailed,
+    retryInitStorage: () => db.retryInitStorage(),
+    isFirstRun: () => db.isFirstRun(),
+    getSetupCompletedAt: () => db.getSetupCompletedAt(),
     getRawDatabase: () => db.getRawDatabase(),
     restoreFromSnapshot: (tablesData: any, actorRole: UserRole) => db.restoreFromSnapshot(tablesData, actorRole),
     recordGeneralJournal: (params: {

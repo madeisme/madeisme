@@ -25,6 +25,10 @@ import {
   CloudUpload,
   CloudDownload,
   FileSpreadsheet,
+  FileJson,
+  HardDrive,
+  Download,
+  Upload,
   CheckCircle,
   LogOut,
   ExternalLink
@@ -41,6 +45,10 @@ import {
   BackupPreviewData,
   isOnline 
 } from '../../services/googleBackupService';
+import {
+  exportDatabaseToJsonFile,
+  parseLocalBackupFile
+} from '../../services/localBackupService';
 import { RestorePreviewModal } from './RestorePreviewModal';
 import { formatDateTimeIndo } from '../../utils/formatters';
 import { runSystemHealthCheck, SystemHealthReport } from '../../utils/systemHealthCheck';
@@ -70,6 +78,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Google Sign-In & Backup States (Prompt 15)
   const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
   const [isBackingUp, setIsBackingUp] = useState(false);
+  const [isExportingJson, setIsExportingJson] = useState(false);
+  const [isReadingLocalJson, setIsReadingLocalJson] = useState(false);
   const [isLoadingRestorePreview, setIsLoadingRestorePreview] = useState(false);
   const [restorePreviewData, setRestorePreviewData] = useState<BackupPreviewData | null>(null);
   const [showRestoreModal, setShowRestoreModal] = useState(false);
@@ -296,6 +306,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setErrorMsg(err.message || 'Gagal mencadangkan data ke Google Sheets.');
     } finally {
       setIsBackingUp(false);
+    }
+  };
+
+  // Local JSON Backup & Restore Handlers
+  const handleExportJson = () => {
+    if (!canRunBackup) {
+      setErrorMsg('Peran Anda tidak memiliki izin menjalankan Backup.');
+      return;
+      }
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setIsExportingJson(true);
+
+    try {
+      const result = exportDatabaseToJsonFile(db);
+      if (!result.success) {
+        throw new Error(result.error || 'Gagal mengekspor data ke file JSON lokal.');
+      }
+      setSuccessMsg(
+        `Cadangan database berhasil diunduh ke penyimpanan lokal! Berkas: "${result.fileName}" (${result.fileSizeFormatted}, ${result.totalRecords} record dari 26 tabel).`
+      );
+    } catch (err: any) {
+      console.error('Export JSON error:', err);
+      setErrorMsg(err.message || 'Gagal mengekspor cadangan database JSON.');
+    } finally {
+      setIsExportingJson(false);
+    }
+  };
+
+  const handleImportJsonFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!canRunRestore) {
+      setErrorMsg('Hanya peran OWNER yang memiliki izin menjalankan Restore Database.');
+      e.target.value = '';
+      return;
+    }
+
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setIsReadingLocalJson(true);
+
+    try {
+      const preview = await parseLocalBackupFile(file, db);
+      if (!preview.success || !preview.tablesData || !preview.diffs || !preview.metadata) {
+        throw new Error(preview.error || 'Gagal membaca berkas cadangan JSON.');
+      }
+
+      setRestorePreviewData({
+        metadata: preview.metadata,
+        tablesData: preview.tablesData,
+        diffs: preview.diffs,
+        fileId: 'local_file',
+        fileName: preview.fileName || file.name
+      });
+      setShowRestoreModal(true);
+    } catch (err: any) {
+      console.error('Parse local backup JSON error:', err);
+      setErrorMsg(err.message || 'Gagal memproses berkas cadangan JSON lokal.');
+    } finally {
+      setIsReadingLocalJson(false);
+      e.target.value = ''; // Reset input agar bisa pilih berkas yang sama bila perlu
     }
   };
 
@@ -901,16 +974,138 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
 
-          {/* TAB 5: BACKUP & SINKRONISASI KE GOOGLE SHEETS (Prompt 15) */}
+          {/* TAB 5: BACKUP & SINKRONISASI KE GOOGLE SHEETS & CADANGAN LOKAL JSON (Prompt 15 & Local Backup) */}
           {activeTab === 'backup' && (
             <div className="space-y-6">
-              {/* Bagian Status Akun Google */}
+              {/* OPSI 1: Cadangan Lokal File JSON (Offline Backup) */}
+              <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-2xs space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <HardDrive className="w-4.5 h-4.5 text-blue-600" />
+                      Cadangan Lokal Offline (Format JSON)
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Ekspor langsung seluruh isi database (26 tabel entitas) ke berkas file JSON di penyimpanan perangkat tanpa memerlukan internet atau akun Google.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 text-[11px] font-bold flex items-center gap-1.5 border border-blue-200">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                      100% Offline & Privat
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  {/* Kartu Ekspor JSON Lokal */}
+                  <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/40 space-y-2.5 flex flex-col justify-between">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-blue-950 flex items-center gap-1.5">
+                          <Download className="w-4 h-4 text-blue-600" />
+                          Unduh Berkas Cadangan JSON
+                        </span>
+                        <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded-md font-bold">
+                          OWNER & ADMIN
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-blue-900/80 leading-relaxed">
+                        Membuat snapshot seluruh data (produk, batch FIFO, transaksi penjualan/pembelian, jurnal umum, utang/piutang, dan master data) lalu mengunduhnya langsung ke memori lokal.
+                      </p>
+                    </div>
+
+                    <div>
+                      <button
+                        onClick={handleExportJson}
+                        disabled={isExportingJson || !canRunBackup}
+                        id="export-json-backup-btn"
+                        className="w-full py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs flex items-center justify-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        title={!canRunBackup ? 'Akses dibatasi: Hanya OWNER dan ADMIN yang dapat menjalankan backup' : 'Unduh cadangan database ke file JSON'}
+                      >
+                        {isExportingJson ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Mengekspor Berkas JSON...</span>
+                          </>
+                        ) : (
+                          <>
+                            <FileJson className="w-4 h-4" />
+                            <span>Ekspor & Unduh File JSON</span>
+                          </>
+                        )}
+                      </button>
+                      {!canRunBackup && (
+                        <p className="text-[10px] text-amber-700 mt-1.5 text-center font-medium">
+                          * Tombol ini hanya dapat diakses oleh peran OWNER & ADMIN
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Kartu Impor JSON Lokal */}
+                  <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/40 space-y-2.5 flex flex-col justify-between">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-amber-950 flex items-center gap-1.5">
+                          <Upload className="w-4 h-4 text-amber-700" />
+                          Pulihkan dari Berkas JSON Lokal
+                        </span>
+                        <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded-md font-bold">
+                          HANYA OWNER
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-amber-900/80 leading-relaxed">
+                        Pilih berkas cadangan JSON yang pernah diunduh dari penyimpanan perangkat, tinjau perbandingan jumlah data, dan pulihkan secara aman setelah konfirmasi eksplisit.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="import-json-backup-input"
+                        className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold shadow-xs flex items-center justify-center gap-2 transition ${
+                          !canRunRestore || isReadingLocalJson
+                            ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer'
+                        }`}
+                      >
+                        {isReadingLocalJson ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Membaca Berkas JSON...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-4 h-4" />
+                            <span>Pilih File JSON untuk Dipulihkan</span>
+                          </>
+                        )}
+                      </label>
+                      <input
+                        type="file"
+                        id="import-json-backup-input"
+                        accept=".json,application/json"
+                        disabled={!canRunRestore || isReadingLocalJson}
+                        onChange={handleImportJsonFileChange}
+                        className="hidden"
+                      />
+                      {!canRunRestore && (
+                        <p className="text-[10px] text-rose-700 mt-1.5 text-center font-medium">
+                          * Tombol pemulihan data hanya dapat diakses oleh peran OWNER
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* OPSI 2: Bagian Status Akun Google */}
               <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-2xs space-y-4">
                 <div className="flex items-center justify-between flex-wrap gap-3">
                   <div>
                     <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                       <Cloud className="w-4 h-4 text-emerald-600" />
-                      Tautan Akun Google & Otorisasi
+                      Cadangan Cloud Google Sheets (Opsional Online)
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
                       Menghubungkan akun Google untuk izin akses Google Sheets & Google Drive (drive.file scope)
@@ -1169,11 +1364,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
               {/* Prinsip Desain & Batasan Teknis (§1) */}
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 text-[11px] text-slate-600">
-                <span className="font-bold text-slate-800 block text-xs">Ketentuan Desain (Prompt 15):</span>
+                <span className="font-bold text-slate-800 block text-xs">Ketentuan Desain & Keamanan Cadangan Data:</span>
                 <ul className="list-disc pl-4 space-y-1">
-                  <li><strong>IndexedDB tetap satu-satunya sumber kebenaran operasional:</strong> Google Sheets hanya berperan sebagai cermin/cadangan. Aplikasi tetap bekerja 100% secara offline tanpa internet.</li>
-                  <li><strong>Identitas Google terpisah dari Peran ERP:</strong> Akun Google hanya untuk otorisasi Google Drive/Sheets. Hak akses pengguna diatur lewat menu Pengguna.</li>
-                  <li><strong>Tidak ada sinkronisasi otomatis latar belakang:</strong> Pencadangan dan pemulihan murni dijalankan secara manual oleh pengguna.</li>
+                  <li><strong>IndexedDB tetap satu-satunya sumber kebenaran operasional:</strong> Google Sheets maupun berkas cadangan JSON lokal berperan sebagai cermin/cadangan snapshot independen. Aplikasi tetap bekerja 100% secara offline tanpa internet.</li>
+                  <li><strong>Cadangan Berkas JSON Offline:</strong> Anda dapat mengekspor berkas JSON kapan saja tanpa internet dan menyimpannya di flashdisk, memori internal perangkat, atau media penyimpanan lain untuk keamanan data maksimal.</li>
+                  <li><strong>Identitas Google terpisah dari Peran ERP:</strong> Akun Google hanya untuk otorisasi Google Drive/Sheets. Hak akses pengguna diatur terpusat lewat menu Pengguna.</li>
+                  <li><strong>Tidak ada sinkronisasi otomatis latar belakang:</strong> Pencadangan dan pemulihan murni dijalankan secara manual oleh pengguna (user-initiated).</li>
                 </ul>
               </div>
             </div>

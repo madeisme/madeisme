@@ -290,6 +290,12 @@ export const SEED_SALE_LINES: SaleLine[] = [
 
 export const SEED_JOURNALS: Journal[] = [
   {
+    id: 'JRN-20260901-0001',
+    refType: 'EXPENSE',
+    refId: 'SALDO-AWAL-PERSEDIAAN',
+    businessDate: '2026-09-01'
+  },
+  {
     id: 'JRN-20260910-0001',
     refType: 'SALE',
     refId: 'SL-20260910-0001',
@@ -298,6 +304,8 @@ export const SEED_JOURNALS: Journal[] = [
 ];
 
 export const SEED_JOURNAL_LINES: JournalLine[] = [
+  { id: 'JRN-20260901-0001-1', journalId: 'JRN-20260901-0001', accountCode: '1310', side: 'DEBIT', amount: 3576300 },
+  { id: 'JRN-20260901-0001-2', journalId: 'JRN-20260901-0001', accountCode: '3110', side: 'CREDIT', amount: 3576300 },
   { id: 'JRN-20260910-0001-1', journalId: 'JRN-20260910-0001', accountCode: '1210', side: 'DEBIT', amount: 150000 },
   { id: 'JRN-20260910-0001-2', journalId: 'JRN-20260910-0001', accountCode: '5110', side: 'DEBIT', amount: 120000 },
   { id: 'JRN-20260910-0001-3', journalId: 'JRN-20260910-0001', accountCode: '4110', side: 'CREDIT', amount: 150000 },

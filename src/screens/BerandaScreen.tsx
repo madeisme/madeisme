@@ -9,6 +9,8 @@ import { FinancialInsightCharts } from '../components/beranda/FinancialInsightCh
 import { LaporanArusKasCard } from '../components/beranda/LaporanArusKasCard';
 import { RingkasanKeuanganCard } from '../components/beranda/RingkasanKeuanganCard';
 import { EstimasiLabaRugiCard } from '../components/beranda/EstimasiLabaRugiCard';
+import { DailySalesTrendCard } from '../components/beranda/DailySalesTrendCard';
+import { MonthlySalesTrendCard } from '../components/beranda/MonthlySalesTrendCard';
 import { 
   ReceiptText, 
   AlertTriangle, 
@@ -25,7 +27,8 @@ import {
   ShoppingBag,
   TrendingUp,
   Activity,
-  AlertCircle
+  AlertCircle,
+  Sparkles
 } from 'lucide-react';
 import { TabDestination } from '../components/layout/BottomNav';
 
@@ -447,6 +450,12 @@ export const BerandaScreen: React.FC<BerandaScreenProps> = ({ onNavigate, onOpen
             </div>
           </div>
 
+          {/* Visualisasi Tren Penjualan Harian 7 Hari Terakhir (Recharts) */}
+          <DailySalesTrendCard onNavigate={onNavigate} />
+
+          {/* Laporan & Tren Penjualan Bulanan (Recharts Jangka Panjang) */}
+          <MonthlySalesTrendCard onNavigate={onNavigate} />
+
           {/* Section: PO Menunggu Aksi (Audit #2) */}
           {totalPendingPoCount > 0 && (
             <div className="bg-blue-50/80 border border-blue-200 rounded-xl p-4 flex items-center justify-between flex-wrap gap-3">
@@ -491,12 +500,21 @@ export const BerandaScreen: React.FC<BerandaScreenProps> = ({ onNavigate, onOpen
                   Peringatan Stok Menipis ({lowStockItems.length})
                 </h3>
               </div>
-              <button
-                onClick={() => onNavigate('stok')}
-                className="text-xs text-emerald-700 hover:text-emerald-800 font-medium flex items-center gap-1"
-              >
-                Lihat Semua Stok <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => onNavigate('stok')}
+                  className="text-xs text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-2 py-1 rounded-lg font-bold flex items-center gap-1 border border-emerald-200"
+                >
+                  <Sparkles className="w-3 h-3 text-amber-500" />
+                  AI Prediksi Stok
+                </button>
+                <button
+                  onClick={() => onNavigate('stok')}
+                  className="text-xs text-emerald-700 hover:text-emerald-800 font-medium flex items-center gap-1"
+                >
+                  Lihat Semua <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
             {lowStockItems.length === 0 ? (

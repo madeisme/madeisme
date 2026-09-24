@@ -5,6 +5,7 @@ import {
   X, 
   CheckCircle2, 
   FileSpreadsheet, 
+  FileJson,
   Layers, 
   ArrowRight, 
   ShieldAlert, 
@@ -91,9 +92,13 @@ export const RestorePreviewModal: React.FC<RestorePreviewModalProps> = ({
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <span className="text-[10px] font-semibold uppercase text-slate-500 block">Sumber File Backup</span>
-              <span className="font-bold text-slate-900 flex items-center gap-1.5 mt-0.5">
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                {previewData.fileName}
+              <span className="font-bold text-slate-900 flex items-center gap-1.5 mt-0.5 truncate" title={previewData.fileName}>
+                {previewData.fileName.toLowerCase().endsWith('.json') ? (
+                  <FileJson className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                ) : (
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                )}
+                <span className="truncate">{previewData.fileName}</span>
               </span>
             </div>
             <div>
